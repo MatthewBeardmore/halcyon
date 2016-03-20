@@ -3691,7 +3691,7 @@ namespace OpenSim.Region.ClientStack.LindenUDP
 
                         //Make sure that we send this! Otherwise, the client will only see one prim
                         if (pfu.Part.ParentGroup != null)
-                            if (pfu.Part.ParentGroup.Children.Count != 1)
+                            if (pfu.Part.ParentGroup.PrimCount != 1)
                                 updateFlags |= PrimUpdateFlags.ParentID;
 
                         if (updateFlags.HasFlag(PrimUpdateFlags.Text) && pfu.Part.Text == "")
