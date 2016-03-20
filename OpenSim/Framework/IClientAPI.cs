@@ -71,6 +71,8 @@ namespace OpenSim.Framework
                                    UUID RayTargetID, byte BypassRayCast, bool RayEndIsIntersection,
                                    bool RezSelected, bool RemoveItem, UUID fromTaskID);
 
+    public delegate void RestoreObject(IClientAPI remoteClient, UUID groupID, UUID itemID);
+
     public delegate UUID RezSingleAttachmentFromInv(IClientAPI remoteClient, UUID itemID, uint AttachmentPt, bool append);
 
     public delegate void RezMultipleAttachmentsFromInv(IClientAPI remoteClient, RezMultipleAttachmentsFromInvPacket.HeaderDataBlock header,
@@ -85,7 +87,7 @@ namespace OpenSim.Framework
 
     public delegate void NetworkStats(int inPackets, int outPackets, int unAckedBytes);
 
-    public delegate void SetAppearance(byte[] texture, List<byte> visualParamList, WearableCache[] wearables);
+    public delegate void SetAppearance(byte[] texture, List<byte> visualParamList, WearableCache[] wearables, uint serial);
 
     public delegate void StartAnim(IClientAPI remoteClient, UUID animID);
 
@@ -660,6 +662,7 @@ namespace OpenSim.Framework
         event TextureRequest OnRequestTexture;
         // [Obsolete("LLClientView Specific - Remove bitbuckets. Adam, can you be more specific here..  as I don't see any bit buckets.")]
         event RezObject OnRezObject;
+        event RestoreObject OnRestoreObject;
         // [Obsolete("LLClientView Specific - Replace with more suitable arguments.")]
         event ModifyTerrain OnModifyTerrain;
         event BakeTerrain OnBakeTerrain;
@@ -941,7 +944,7 @@ namespace OpenSim.Framework
         /// <param name="agentID">The id of the agent associated with the appearance</param>
         /// <param name="visualParams"></param>
         /// <param name="textureEntry"></param>        
-        void SendAppearance(UUID agentID, byte[] visualParams, byte[] textureEntry);
+        void SendAppearance(AvatarAppearance app);
 
         void SendStartPingCheck(byte seq);
 

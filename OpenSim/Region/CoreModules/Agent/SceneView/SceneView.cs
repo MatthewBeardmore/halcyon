@@ -303,12 +303,11 @@ namespace OpenSim.Region.CoreModules.Agent.SceneView
             m_perfMonMS = Environment.TickCount;
             scenePresence.RecalcVisualPosition(out vPos, out vRot, out vParentID);    // vParentID is not used in terse updates.  o.O
             PhysicsActor physActor = scenePresence.PhysicsActor;
-            Vector3 vel = scenePresence.Velocity;
             Vector3 accel = (physActor != null) ? physActor.Acceleration : Vector3.Zero;
 
             // m_log.InfoFormat("[SCENE PRESENCE]: SendTerseUpdateToClient sit at {0} vel {1} rot {2} ", pos.ToString(),vel.ToString(), rot.ToString()); 
             m_presence.ControllingClient.SendAvatarTerseUpdate(scenePresence.Scene.RegionInfo.RegionHandle, (ushort)(scenePresence.Scene.TimeDilation * ushort.MaxValue), scenePresence.LocalId, vPos,
-                                                vel, accel, vRot, scenePresence.UUID, physActor != null ? physActor.CollisionPlane : Vector4.UnitW);
+                scenePresence.Velocity, accel, vRot, scenePresence.UUID, physActor != null ? physActor.CollisionPlane : Vector4.UnitW);
             m_presence.Scene.StatsReporter.AddAgentTime(Environment.TickCount - m_perfMonMS);
             m_presence.Scene.StatsReporter.AddAgentUpdates(1);
         }
@@ -464,7 +463,7 @@ namespace OpenSim.Region.CoreModules.Agent.SceneView
                 if ((e).IsAttachedHUD && (e).OwnerID != m_presence.UUID)
                     continue;//Don't ever send HUD attachments to non-owners
 
-                SceneObjectPart[] sogParts = null;
+                IReadOnlyCollection<SceneObjectPart> sogParts = null;
                 bool needsParts = false;
                 lock (m_updateTimes)
                 {
@@ -537,7 +536,7 @@ namespace OpenSim.Region.CoreModules.Agent.SceneView
         private bool CheckWhetherAttachmentShouldBeSent(SceneObjectGroup e)
         {
             bool hasBeenUpdated = false;
-            SceneObjectPart[] attParts = e.GetParts();
+            var attParts = e.GetParts();
 
             lock (m_updateTimes)
             {
@@ -744,7 +743,7 @@ namespace OpenSim.Region.CoreModules.Agent.SceneView
 
             SceneObjectGroup lastSog = null;
             bool condition1 = false;
-            SceneObjectPart[] lastParentGroupParts = null;
+            IReadOnlyCollection<SceneObjectPart> lastParentGroupParts = null;
 
             while (m_partsUpdateQueue.Count > 0 && HasFinishedInitialUpdate)
             {
@@ -790,7 +789,7 @@ namespace OpenSim.Region.CoreModules.Agent.SceneView
                     condition1 = false;
                 }
 
-                SceneObjectPart[] parentGroupParts = null;
+                IReadOnlyCollection<SceneObjectPart> parentGroupParts = null;
                 bool needsParentGroupParts = false;
                 lock (m_updateTimes)
                 {

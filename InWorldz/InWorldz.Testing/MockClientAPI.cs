@@ -134,6 +134,7 @@ namespace InWorldz.Testing
         public event TextureRequest OnRequestTexture;
 
         public event RezObject OnRezObject;
+        public event RestoreObject OnRestoreObject;
 
         public event ModifyTerrain OnModifyTerrain;
 
@@ -599,7 +600,7 @@ namespace InWorldz.Testing
             
         }
 
-        public void SendAppearance(OpenMetaverse.UUID agentID, byte[] visualParams, byte[] textureEntry)
+        public void SendAppearance(AvatarAppearance app)
         {
             
         }

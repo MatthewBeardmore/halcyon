@@ -1031,7 +1031,7 @@ namespace OpenSim.Region.ClientStack.LindenUDP
                 RefreshGroupMembership();   // Do this before AddNewClient since it will send the data down
             }
 
-            m_scene.AddNewClient(this);
+            m_scene.AddNewClient(this, false);
 
             // check if we've already received the CompleteAgentMovement packet for this client
             if (_receivedCompleteAgentMovement)
@@ -1139,6 +1139,7 @@ namespace OpenSim.Region.ClientStack.LindenUDP
         public event ChatMessage OnChatFromClient;
         public event TextureRequest OnRequestTexture;
         public event RezObject OnRezObject;
+        public event RestoreObject OnRestoreObject;
         public event DeRezObjects OnDeRezObjects;
         public event ModifyTerrain OnModifyTerrain;
         public event Action<IClientAPI> OnRegionHandShakeReply;
@@ -3038,12 +3039,15 @@ namespace OpenSim.Region.ClientStack.LindenUDP
             OutPacket(aw, ThrottleOutPacketType.Task);
         }
 
-        public void SendAppearance(UUID agentID, byte[] visualParams, byte[] textureEntry)
+        public void SendAppearance(AvatarAppearance app)
         {
+            // UUID agentID, byte[] visualParams, byte[] textureEntry)
+            // m_appearance.Owner, m_appearance.VisualParams, m_appearance.Texture.GetBytes()
+
             // Disallow any self-referencing AvatarAppearance packets
-            if (agentID == this.AgentId)
+            if (app.Owner == this.AgentId)
             {
-                m_log.ErrorFormat("[CLIENT]: Refusing to send self-update of AvatarAppearance to {0}", agentID.ToString());
+                m_log.ErrorFormat("[CLIENT]: Refusing to send self-update of AvatarAppearance to {0}", app.Owner.ToString());
                 return;
             }
 
@@ -3051,26 +3055,36 @@ namespace OpenSim.Region.ClientStack.LindenUDP
             // TODO: don't create new blocks if recycling an old packet
             int clientParamsLength = MaxVisualParams();
 
-            if (clientParamsLength > visualParams.Length)
-                clientParamsLength = visualParams.Length;
+            if (clientParamsLength > app.VisualParams.Length)
+                clientParamsLength = app.VisualParams.Length;
 
             avp.VisualParam = new AvatarAppearancePacket.VisualParamBlock[clientParamsLength];
-            avp.ObjectData.TextureEntry = textureEntry;
+            avp.ObjectData.TextureEntry = app.Texture.GetBytes();
 
             AvatarAppearancePacket.VisualParamBlock avblock = null;
 
             for (int i = 0; i < clientParamsLength; i++)
             {
                 avblock = new AvatarAppearancePacket.VisualParamBlock();
-                avblock.ParamValue = (i < visualParams.Length) ? visualParams[i] : AvatarAppearance.VISUALPARAM_DEFAULT;
+                avblock.ParamValue = (i < app.VisualParams.Length) ? app.VisualParams[i] : AvatarAppearance.VISUALPARAM_DEFAULT;
                 avp.VisualParam[i] = avblock;
             }
 
-            // Coff Version and SSA flag. Currently ununsed.
-            avp.AppearanceData = new AvatarAppearancePacket.AppearanceDataBlock[0];
+            // Coff Version and SSA flag.
+            avp.AppearanceData = 
+                new AvatarAppearancePacket.AppearanceDataBlock[1]
+                {
+                    new AvatarAppearancePacket.AppearanceDataBlock()
+                    {
+                        CofVersion = app.Serial,
+                        AppearanceVersion = (int)RegionProtocols.None
+                    }
+                };
+
+            // TODO Add AvatarHoverPacket block here 
 
             avp.Sender.IsTrial = false;
-            avp.Sender.ID = agentID;
+            avp.Sender.ID = app.Owner;
             OutPacket(avp, ThrottleOutPacketType.Task);
         }
 
@@ -5429,6 +5443,7 @@ namespace OpenSim.Region.ClientStack.LindenUDP
             AddLocalPacketHandler(PacketType.AgentIsNowWearing, HandlerAgentIsNowWearing, PacketHandlingDisposition.HandleSynchronized);
             AddLocalPacketHandler(PacketType.RezSingleAttachmentFromInv, HandlerRezSingleAttachmentFromInv, PacketHandlingDisposition.HandleAsync);
             AddLocalPacketHandler(PacketType.RezMultipleAttachmentsFromInv, HandleRezMultipleAttachmentsFromInv, PacketHandlingDisposition.HandleAsync);
+            AddLocalPacketHandler(PacketType.RezRestoreToWorld, HandlerRezRestoreToWorld, PacketHandlingDisposition.HandleAsync);
             AddLocalPacketHandler(PacketType.DetachAttachmentIntoInv, HandleDetachAttachmentIntoInv, PacketHandlingDisposition.HandleAsync);
             AddLocalPacketHandler(PacketType.ObjectAttach, HandleObjectAttach, PacketHandlingDisposition.HandleSynchronized);
             AddLocalPacketHandler(PacketType.ObjectDetach, HandleObjectDetach, PacketHandlingDisposition.HandleSynchronized);
@@ -8501,6 +8516,29 @@ namespace OpenSim.Region.ClientStack.LindenUDP
             return true;
         }
 
+        private bool HandlerRezRestoreToWorld(IClientAPI sender, Packet Pack)
+        {
+            if (m_frozenUser) return true;
+
+            RezRestoreToWorldPacket rezPacket = (RezRestoreToWorldPacket)Pack;
+
+            #region Packet Session and User Check
+            if (m_checkPackets)
+            {
+                if (rezPacket.AgentData.SessionID != SessionId ||
+                    rezPacket.AgentData.AgentID != AgentId)
+                    return true;
+            }
+            #endregion
+
+            RestoreObject handlerRestoreObject = OnRestoreObject;
+            if (handlerRestoreObject != null)
+            {
+                handlerRestoreObject(this, rezPacket.InventoryData.GroupID, rezPacket.InventoryData.ItemID);
+            }
+            return true;
+        }
+
         private bool HandlerModifyLand(IClientAPI sender, Packet Pack)
         {
             if (m_frozenUser) return true;
@@ -8612,7 +8650,10 @@ namespace OpenSim.Region.ClientStack.LindenUDP
                         };
                         items[i] = cache;
                     }
-                    handlerSetAppearance(appear.ObjectData.TextureEntry, visualparams, items);
+
+                    uint serial = appear.AgentData.SerialNum;
+
+                    handlerSetAppearance(appear.ObjectData.TextureEntry, visualparams, items, serial);
                 }
                 catch (Exception e)
                 {

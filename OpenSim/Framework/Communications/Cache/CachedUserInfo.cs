@@ -141,16 +141,16 @@ namespace OpenSim.Framework.Communications.Cache
                 {
                     if ((permsGiven & permissionMask) != 0)
                     {
-                        return true;
+                        return true;    // friend has permission
                     }
                     else
                     {
-                        return false;
+                        return false;   // friend does not have permission
                     }
                 }
                 else
                 {
-                    return false;
+                    return false;       // not a friend
                 }
             }
         }
@@ -177,6 +177,15 @@ namespace OpenSim.Framework.Communications.Cache
             lock (_permissionsGivenByFriends)
             {
                 _permissionsGivenByFriends[friendId] = newPermissions;
+            }
+        }
+
+        public void RemoveFromFriendsCache(UUID friendId)
+        {
+            lock (_permissionsGivenByFriends)
+            {
+                if (_permissionsGivenByFriends.ContainsKey(friendId))
+                    _permissionsGivenByFriends.Remove(friendId);
             }
         }
 
@@ -548,7 +557,7 @@ namespace OpenSim.Framework.Communications.Cache
         /// If the inventory service has not yet delievered the inventory
         /// for this user then the request will be queued.
         /// </summary>
-        /// <param name="itemID"></param>
+        /// <param name="item"></param>
         /// <returns>
         /// true on a successful delete or a if the request is queued.
         /// Returns false on an immediate failure
