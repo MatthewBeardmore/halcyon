@@ -1788,7 +1788,7 @@ namespace OpenSim.Region.Framework.Scenes
 
             m_aggregateScriptEvents = aggregateScriptEvents;
 
-            ScheduleGroupForFullUpdate(PrimUpdateFlags.FindBest);
+            ScheduleGroupForFullUpdate(PrimUpdateFlags.FullUpdate);
         }
 
         public override void SetText(string text, Vector3 color, double alpha)
@@ -2444,7 +2444,7 @@ namespace OpenSim.Region.Framework.Scenes
                     ApplyNextOwnerPermissions();
             }
 
-            part.ScheduleFullUpdate(PrimUpdateFlags.ForcedFullUpdate);
+            part.ScheduleFullUpdate(PrimUpdateFlags.FullUpdate);
         }
 
         /// <summary>
@@ -3040,7 +3040,7 @@ namespace OpenSim.Region.Framework.Scenes
         /// <param name="offset">Always seems to be 0,0,0, so ignoring</param>
         /// <param name="pos">New position.  We do the math here to turn it into a force</param>
         /// <param name="remoteClient"></param>
-        public void GrabMovement(Vector3 offset, Vector3 pos, IClientAPI remoteClient)
+        public bool GrabMovement(Vector3 offset, Vector3 pos, IClientAPI remoteClient)
         {
             if (m_scene.EventManager.TriggerGroupMove(UUID, pos))
             {
@@ -3051,9 +3051,11 @@ namespace OpenSim.Region.Framework.Scenes
                     if (physActor.IsPhysical)
                     {
                         physActor.SetGrabTarget(pos, 0.25f);
+                        return true;
                     }
                 }
             }
+            return false;
         }
 
         public void DeGrab(IClientAPI remoteClient)
@@ -3067,15 +3069,7 @@ namespace OpenSim.Region.Framework.Scenes
                 }
             }
         }
-
-        public void NonPhysicalGrabMovement(Vector3 pos)
-        {
-            AbsolutePosition = pos;
-
-            List<ScenePresence> avatars = Scene.GetScenePresences();
-            m_rootPart.SendTerseUpdateToAllClients(avatars);
-        }
-
+        
         /// <summary>
         /// If object is physical, prepare for spinning torques (set flag to save old orientation)
         /// </summary>
@@ -3443,7 +3437,7 @@ namespace OpenSim.Region.Framework.Scenes
                 //if (part.UUID != m_rootPart.UUID)
 
                 HasGroupChanged = true;
-                ScheduleGroupForFullUpdate(PrimUpdateFlags.FindBest);
+                ScheduleGroupForFullUpdate(PrimUpdateFlags.Shape | PrimUpdateFlags.Position);
             }
         }
 
@@ -4206,7 +4200,9 @@ namespace OpenSim.Region.Framework.Scenes
                 HasGroupChanged = true;
             }
 
-            ScheduleGroupForFullUpdate(PrimUpdateFlags.PrimData);
+            //Since GroupID is sent via the ObjectProperties packet rather than updates
+            // scheduling an update here doesn't do anything other than waste bandwidth
+            //ScheduleGroupForFullUpdate(PrimUpdateFlags.FullUpdate);
         }
 
         public void SetGeneration(int value)

@@ -176,7 +176,7 @@ namespace OpenSim.Region.OptionalModules.World.TreePopulator
 
                     // 100 seconds to grow 1m
                     s_tree.Scale += new Vector3(0.1f, 0.1f, 0.1f);
-                    s_tree.ScheduleFullUpdate(PrimUpdateFlags.FindBest);
+                    s_tree.ScheduleFullUpdate(PrimUpdateFlags.FullUpdate);
                     //s_tree.ScheduleTerseUpdate();
                 }
                 else

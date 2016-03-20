@@ -527,7 +527,10 @@ namespace OpenSim.Region.CoreModules.Agent.SceneView
                     return;
                 }
 
-                SendGroupUpdate(kvp.Value, PrimUpdateFlags.FindBest);
+                //We want to be able to send cached updates here if it is useful
+                // and if it hasn't been seen, then we'll detect that and send a full
+                // update rather than the flags we sent along
+                SendGroupUpdate(kvp.Value, PrimUpdateFlags.CompressedOrCached);
             }
         }
 
@@ -941,14 +944,14 @@ namespace OpenSim.Region.CoreModules.Agent.SceneView
                     sendFullInitialUpdate = true;
                 }
             }
-            if (sendFullUpdate)
+            if (sendFullUpdate || sendTerseUpdate)
             {
                 part.SendFullUpdate(m_presence.ControllingClient, m_presence.GenerateClientFlags(part.UUID), updateFlags);
             }
-            else if (sendTerseUpdate)
-            {
-                part.SendTerseUpdateToClient(m_presence.ControllingClient);
-            }
+            //else if (sendTerseUpdate)
+            //{
+            //    part.SendTerseUpdateToClient(m_presence.ControllingClient);
+            //}
             else if (sendFullInitialUpdate)
             {
                 // Attachment handling

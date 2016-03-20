@@ -34,17 +34,21 @@ using OpenMetaverse.StructuredData;
 using OpenSim.Region.Framework.Interfaces;
 using OpenSim.Region.Framework.Scenes;
 using OpenSim.Framework;
+using Mono.Addins;
+using log4net;
+using System.Reflection;
 
 namespace OpenSim.Region.CoreModules.ObjectCache
 {
+    [Extension(Path = "/OpenSim/RegionModules", NodeName = "RegionModule")]
     public class ObjectCacheModule : INonSharedRegionModule, IObjectCache
     {
         #region Declares
 
-        //private static readonly ILog MainConsole.Instance = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
+        private static readonly ILog m_log = LogManager.GetLogger(MethodBase.GetCurrentMethod().DeclaringType);
 
-        private readonly Dictionary<UUID, Dictionary<uint, uint>> ObjectCacheAgents =
-            new Dictionary<UUID, Dictionary<uint, uint>>();
+        private readonly Dictionary<UUID, Dictionary<UUID, uint>> ObjectCacheAgents =
+            new Dictionary<UUID, Dictionary<UUID, uint>>();
 
         protected bool m_Enabled = true;
 
@@ -63,17 +67,25 @@ namespace OpenSim.Region.CoreModules.ObjectCache
                 m_Enabled = moduleConfig.GetString("Module", "") == Name;
                 m_filePath = moduleConfig.GetString("PathToSaveFiles", m_filePath);
             }
-            if (!Directory.Exists(m_filePath))
-            {
-                try
-                {
-                    Directory.CreateDirectory(m_filePath);
-                }
-                catch (Exception)
-                {
-                }
-            }
+
+            //MTB - disable this for now as it really doesn't work... needs more investigation
+            // as to why the viewer always rejects ObjectCachePackets
             m_Enabled = false;
+
+            if (m_Enabled)
+            {
+                if (!Directory.Exists(m_filePath))
+                {
+                    try
+                    {
+                        Directory.CreateDirectory(m_filePath);
+                    }
+                    catch (Exception)
+                    {
+                    }
+                }
+                m_log.Info("[ObjectCache]: Module enabled and using path " + m_filePath);
+            }
         }
 
         public virtual void AddRegion(Scene scene)
@@ -122,8 +134,7 @@ namespace OpenSim.Region.CoreModules.ObjectCache
             ScenePresence sp;
             ((Scene)client.Scene).TryGetAvatar(client.AgentId, out sp);
             //Create the client's cache
-            //This is shared, so all get saved into one file
-            if (sp != null && !sp.IsChildAgent)
+            if (sp != null)
             {
                 Util.FireAndForget(LoadFileOnNewClient, sp.UUID);
             }
@@ -158,25 +169,25 @@ namespace OpenSim.Region.CoreModules.ObjectCache
 
         #region Serialization
 
-        public string SerializeAgentCache(Dictionary<uint, uint> cache)
+        public string SerializeAgentCache(Dictionary<UUID, uint> cache)
         {
             OSDMap cachedMap = new OSDMap();
-            foreach (KeyValuePair<uint, uint> kvp in cache)
+            foreach (KeyValuePair<UUID, uint> kvp in cache)
             {
                 cachedMap.Add(kvp.Key.ToString(), OSD.FromUInteger(kvp.Value));
             }
             return OSDParser.SerializeJsonString(cachedMap);
         }
 
-        public Dictionary<uint, uint> DeserializeAgentCache(string osdMap)
+        public Dictionary<UUID, uint> DeserializeAgentCache(string osdMap)
         {
-            Dictionary<uint, uint> cache = new Dictionary<uint, uint>();
+            Dictionary<UUID, uint> cache = new Dictionary<UUID, uint>();
             try
             {
                 OSDMap cachedMap = (OSDMap) OSDParser.DeserializeJson(osdMap);
                 foreach (KeyValuePair<string, OSD> kvp in cachedMap)
                 {
-                    cache[uint.Parse(kvp.Key)] = kvp.Value.AsUInteger();
+                    cache[UUID.Parse(kvp.Key)] = kvp.Value.AsUInteger();
                 }
             }
             catch
@@ -194,12 +205,12 @@ namespace OpenSim.Region.CoreModules.ObjectCache
 
         public void SaveToFileForClient(UUID AgentID)
         {
-            Dictionary<uint, uint> cache;
+            Dictionary<UUID, uint> cache;
             lock (ObjectCacheAgents)
             {
                 if (!ObjectCacheAgents.ContainsKey(AgentID))
                     return;
-                cache = new Dictionary<uint, uint>(ObjectCacheAgents[AgentID]);
+                cache = new Dictionary<UUID, uint>(ObjectCacheAgents[AgentID]);
                 ObjectCacheAgents[AgentID].Clear();
                 ObjectCacheAgents.Remove(AgentID);
             }
@@ -220,7 +231,7 @@ namespace OpenSim.Region.CoreModules.ObjectCache
             //Read file here
             if (file != "") //New file
             {
-                Dictionary<uint, uint> cache = DeserializeAgentCache(file);
+                Dictionary<UUID, uint> cache = DeserializeAgentCache(file);
                 if (cache == null)
                 {
                     //Something went wrong, delete the file
@@ -257,7 +268,7 @@ namespace OpenSim.Region.CoreModules.ObjectCache
         /// <param name="localID"></param>
         /// <param name="CurrentEntityCRC"></param>
         /// <returns></returns>
-        public bool UseCachedObject(UUID AgentID, uint localID, uint CurrentEntityCRC)
+        public bool UseCachedObject(UUID AgentID, UUID localID, uint CurrentEntityCRC)
         {
             lock (ObjectCacheAgents)
             {
@@ -277,17 +288,17 @@ namespace OpenSim.Region.CoreModules.ObjectCache
             }
         }
 
-        public void AddCachedObject(UUID AgentID, uint localID, uint CRC)
+        public void AddCachedObject(UUID AgentID, UUID localID, uint CRC)
         {
             lock (ObjectCacheAgents)
             {
                 if (!ObjectCacheAgents.ContainsKey(AgentID))
-                    ObjectCacheAgents[AgentID] = new Dictionary<uint, uint>();
+                    ObjectCacheAgents[AgentID] = new Dictionary<UUID, uint>();
                 ObjectCacheAgents[AgentID][localID] = CRC;
             }
         }
 
-        public void RemoveObject(UUID AgentID, uint localID, byte cacheMissType)
+        public void RemoveObject(UUID AgentID, UUID localID, byte cacheMissType)
         {
             lock (ObjectCacheAgents)
             {

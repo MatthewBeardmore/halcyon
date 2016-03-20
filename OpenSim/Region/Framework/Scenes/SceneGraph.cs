@@ -538,41 +538,46 @@ namespace OpenSim.Region.Framework.Scenes
         {
             foreach (var update in updateList)
             {
-                // Check that the group was not deleted before the scheduled update
-                if (update.Group.IsDeleted)
-                {
-                    //this is too common to send out under normal circumstances
-                    //m_log.ErrorFormat("[SceneObjectGroup]: Update skipped for prim w/deleted group {0} {1}", update.Part.LocalId, update.Part.UUID);
-                    continue;
-                }
+                ProcessUpdate(update);
+            }
+        }
 
-                // This is what happens when an orphanced link set child prim's
-                // group was queued when it was linked
-                //
-                if (update.Group.RootPart == null)
-                {
-                    m_log.ErrorFormat("[SceneObjectGroup]: Update skipped for group with null root prim {0} {1}", update.Group.LocalId, update.Group.UUID);
-                    continue;
-                }
+        private static void ProcessUpdate(UpdateInfo update)
+        {
+            // Check that the group was not deleted before the scheduled update
+            if (update.Group.IsDeleted)
+            {
+                //this is too common to send out under normal circumstances
+                //m_log.ErrorFormat("[SceneObjectGroup]: Update skipped for prim w/deleted group {0} {1}", update.Part.LocalId, update.Part.UUID);
+                return;
+            }
 
-                //also check the sanity of the update. if this prim is no longer part of the
-                //given group, this update doesnt make sense
-                if ((!update.Group.HasChildPrim(update.Part.LocalId)) ||
-                    (update.Part.ParentGroup != update.Group))
-                {
-                    m_log.ErrorFormat("[SceneObjectGroup]: Update skipped for mismatched child to parent. Grp:{0} Prim:{1}", update.Group.UUID, update.Part.UUID);
-                    continue;
-                }
+            // This is what happens when an orphanced link set child prim's
+            // group was queued when it was linked
+            //
+            if (update.Group.RootPart == null)
+            {
+                m_log.ErrorFormat("[SceneObjectGroup]: Update skipped for group with null root prim {0} {1}", update.Group.LocalId, update.Group.UUID);
+                return;
+            }
 
-                try
-                {
-                    update.Part.SendScheduledUpdates(update.UpdateLevel, update.UpdateFlags);
-                }
-                catch (Exception e)
-                {
-                    m_log.ErrorFormat(
-                        "[INNER SCENE]: Failed to update {0}, {1} {2} - {3}", update.Part.Name, update.Part.UUID, update.Part.LocalId, e);
-                }
+            //also check the sanity of the update. if this prim is no longer part of the
+            //given group, this update doesnt make sense
+            if ((!update.Group.HasChildPrim(update.Part.LocalId)) ||
+                (update.Part.ParentGroup != update.Group))
+            {
+                m_log.ErrorFormat("[SceneObjectGroup]: Update skipped for mismatched child to parent. Grp:{0} Prim:{1}", update.Group.UUID, update.Part.UUID);
+                return;
+            }
+
+            try
+            {
+                update.Part.SendScheduledUpdates(update.UpdateLevel, update.UpdateFlags);
+            }
+            catch (Exception e)
+            {
+                m_log.ErrorFormat(
+                    "[INNER SCENE]: Failed to update {0}, {1} {2} - {3}", update.Part.Name, update.Part.UUID, update.Part.LocalId, e);
             }
         }
 
@@ -1765,10 +1770,11 @@ namespace OpenSim.Region.Framework.Scenes
             {
                 if (m_parentScene.Permissions.CanMoveObject(group.UUID, remoteClient.AgentId))// && PermissionsMngr.)
                 {
-                    group.GrabMovement(offset, pos, remoteClient);
+                    if (group.GrabMovement(offset, pos, remoteClient))
+                    {
+                        group.RootPart.ScheduleTerseUpdate();
+                    }
                 }
-
-                group.RootPart.ScheduleTerseUpdate();
             }
         }
 

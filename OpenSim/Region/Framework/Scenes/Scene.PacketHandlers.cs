@@ -112,7 +112,7 @@ namespace OpenSim.Region.Framework.Scenes
         }
 
         /// <summary>
-        /// Invoked when the client requests a prim.
+        /// Invoked when the client requests a prim when we send them a cached object update and the client does not have the prim
         /// </summary>
         /// <param name="primLocalID"></param>
         /// <param name="remoteClient"></param>
@@ -122,6 +122,11 @@ namespace OpenSim.Region.Framework.Scenes
 
             if (obj != null)
             {
+                //Make sure that we don't try to send it again later
+                IObjectCache objectCache = RequestModuleInterface<IObjectCache>();
+                if (objectCache != null)
+                    objectCache.RemoveObject(remoteClient.AgentId, obj.UUID, 0);
+
                 //The viewer didn't have the cached prim like we thought - force a full update 
                 // so that they will get the full prim
                 obj.SendFullUpdateToClient(remoteClient, PrimUpdateFlags.ForcedFullUpdate);
@@ -192,7 +197,7 @@ namespace OpenSim.Region.Framework.Scenes
             if (part.ParentGroup.IsAttachment)
                 isAttachment = true;
             // Regardless of if it is an attachment or not, we need to resend the position in case it moved or changed.
-            part.ParentGroup.ScheduleGroupForFullUpdate(PrimUpdateFlags.FindBest);
+            part.ParentGroup.ScheduleGroupForFullUpdate(PrimUpdateFlags.FullUpdate);
 
             // If it's not an attachment, and we are allowed to move it,
             // then we might have done so. If we moved across a parcel

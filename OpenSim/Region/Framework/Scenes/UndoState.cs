@@ -129,7 +129,7 @@ namespace OpenSim.Region.Framework.Scenes
                     }
                 }
                 part.Undoing = false;
-                part.ScheduleFullUpdate(PrimUpdateFlags.FindBest);
+                part.ScheduleFullUpdate(PrimUpdateFlags.Shape | PrimUpdateFlags.Position | PrimUpdateFlags.Rotation);
             }
         }
 
@@ -174,7 +174,7 @@ namespace OpenSim.Region.Framework.Scenes
                     }
                 }
                 part.Undoing = false;
-                part.ScheduleFullUpdate(PrimUpdateFlags.FindBest);
+                part.ScheduleFullUpdate(PrimUpdateFlags.Shape | PrimUpdateFlags.Position | PrimUpdateFlags.Rotation);
             }
         }
     }

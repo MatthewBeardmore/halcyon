@@ -1682,7 +1682,8 @@ namespace InWorldz.Phlox.Engine
             tmp.Y = (float)scale.Y;
             tmp.Z = (float)scale.Z;
             part.Scale = tmp;
-            part.ScheduleFullUpdate(PrimUpdateFlags.FindBest);
+            //This needs scale and position
+            part.ScheduleFullUpdate(PrimUpdateFlags.Shape | PrimUpdateFlags.Position);
 
             PhySleep();
         }
@@ -1696,7 +1697,7 @@ namespace InWorldz.Phlox.Engine
         {
             m_host.ClickAction = (byte)action;
             if (m_host.ParentGroup != null) m_host.ParentGroup.HasGroupChanged = true;
-            m_host.ScheduleFullUpdate(PrimUpdateFlags.FindBest);
+            m_host.ScheduleFullUpdate(PrimUpdateFlags.ClickAction);
             return;
         }
 
@@ -1989,7 +1990,7 @@ namespace InWorldz.Phlox.Engine
             }
 
             part.ParentGroup.HasGroupChanged = true;
-            part.ScheduleFullUpdate(PrimUpdateFlags.FullUpdate);
+            part.ScheduleFullUpdate(PrimUpdateFlags.Shape);
         }
 
         private static void SetPhantomPropertiesOnPart(SceneObjectPart part, int softness, float gravity, float friction, float wind, float tension, LSL_Vector Force)
@@ -2039,7 +2040,7 @@ namespace InWorldz.Phlox.Engine
             }
 
             part.ParentGroup.HasGroupChanged = true;
-            part.ScheduleFullUpdate(PrimUpdateFlags.FindBest);
+            part.ScheduleFullUpdate(PrimUpdateFlags.Shape);
         }
 
         public LSL_Vector llGetColor(int face)
@@ -3315,7 +3316,7 @@ namespace InWorldz.Phlox.Engine
             if (vel != Vector3.Zero)
                 new_group.SetVelocity(vel, false);
 
-            part.ScheduleFullUpdate(PrimUpdateFlags.FindBest);
+            part.ScheduleFullUpdate(PrimUpdateFlags.FullUpdate);
 
             // if a script was specified, start it now
             if (includesScripts)
@@ -9620,7 +9621,7 @@ namespace InWorldz.Phlox.Engine
                                 shape.ProjectionFocus = ford;
                                 shape.ProjectionAmbiance = ambience;
                                 part.ParentGroup.HasGroupChanged = true;
-                                part.ScheduleFullUpdate(PrimUpdateFlags.FindBest);
+                                part.ScheduleFullUpdate(PrimUpdateFlags.Shape);
                             }
                         break;
 

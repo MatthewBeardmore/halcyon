@@ -1434,6 +1434,23 @@ namespace OpenSim.Region.Framework.Scenes
                 return GetWorldPosition();
             }
         }
+        public Vector3 RelativePosition
+        {
+            get
+            {
+                if (ParentGroup.RootPart.UUID == this.UUID)
+                {
+                    if (IsAttachment)
+                        return OffsetPosition;
+                    else
+                        return AbsolutePosition;
+                }
+                else
+                {
+                    return OffsetPosition;
+                }
+            }
+        }
 
         public UUID ObjectCreator
         {
@@ -1960,7 +1977,7 @@ namespace OpenSim.Region.Framework.Scenes
 
             //disable the physics flag
             this.ParentGroup.RemGroupFlagValue(PrimFlags.Physics);
-            this.ScheduleFullUpdate(PrimUpdateFlags.PrimFlags);
+            this.ScheduleFullUpdate(PrimUpdateFlags.FullUpdate);
         }
 
         void PhysActor_OnPositionUpdate()
@@ -2752,7 +2769,7 @@ namespace OpenSim.Region.Framework.Scenes
 
         public void PhysicsRequestingTerseUpdate()
         {
-            ScheduleTerseUpdate();
+            //ScheduleTerseUpdate();
         }
 
         public void PreloadSound(string sound)
@@ -2866,7 +2883,7 @@ namespace OpenSim.Region.Framework.Scenes
 
             ParentGroup.HasGroupChanged = true;
             if (m_parentGroup != null) m_parentGroup.ClearBoundingBoxCache();
-            ScheduleFullUpdate(PrimUpdateFlags.Shape);
+            ScheduleFullUpdate(PrimUpdateFlags.Shape | PrimUpdateFlags.Position);
         }
 
         /// <summary>
@@ -3095,7 +3112,7 @@ namespace OpenSim.Region.Framework.Scenes
             switch (level)
             {
                 case UpdateLevel.Terse:
-                    AddTerseUpdateToAllAvatars();
+                    AddFullUpdateToAllAvatars(updateFlags);
                     break;
 
                 /*case UpdateLevel.Compressed:
@@ -3527,7 +3544,10 @@ namespace OpenSim.Region.Framework.Scenes
             _groupID = groupID;
             if (client != null)
                 GetProperties(client);
-            ScheduleFullUpdate(PrimUpdateFlags.ForcedFullUpdate);
+
+            //Since GroupID is sent via the ObjectProperties packet rather than updates
+            // scheduling an update here doesn't do anything other than waste bandwidth
+            //ScheduleFullUpdate(PrimUpdateFlags.FullUpdate);
         }
 
         /// <summary>
@@ -4309,7 +4329,9 @@ namespace OpenSim.Region.Framework.Scenes
                             _everyoneMask &= ~(uint)PermissionMask.Export;
                         break;
                 }
-                ScheduleFullUpdate(PrimUpdateFlags.PrimData);
+                // I can't see a reason for doing this, object properties are what update this value on the client
+                // not a full/compressed update
+                //ScheduleFullUpdate(PrimUpdateFlags.FullUpdate);
                 SendObjectPropertiesToClient(AgentID);
             }
             return true;
@@ -4508,7 +4530,7 @@ namespace OpenSim.Region.Framework.Scenes
             //m_log.Debug(targetSummary);
 
             ParentGroup.HasGroupChanged = true;
-            ScheduleFullUpdate(PrimUpdateFlags.PrimFlags);
+            ScheduleFullUpdate(PrimUpdateFlags.FullUpdate);
         }
 
         private void RemoveFromPhysicalScene(PhysicsActor physActor)
@@ -4707,14 +4729,17 @@ namespace OpenSim.Region.Framework.Scenes
                 PhysicsActor physActor = PhysActor;
                 if (physActor != null)
                 {
-                    physActor.UnSubscribeEvents();
+                    if(physActor.SubscribedEvents())
+                    {
+                        physActor.UnSubscribeEvents();
+                    }
                     physActor.OnCollisionUpdate -= PhysicsCollision;
                 }
             }
 
             if (m_parentGroup == null)
             {
-                ScheduleFullUpdate(PrimUpdateFlags.FindBest);
+                ScheduleFullUpdate(PrimUpdateFlags.CompressedOrCached);
                 return;
             }
 
@@ -4723,7 +4748,7 @@ namespace OpenSim.Region.Framework.Scenes
             if (m_parentGroup != null && m_parentGroup.RootPart == this)
                 m_parentGroup.aggregateScriptEvents();
             else
-                ScheduleFullUpdate(PrimUpdateFlags.FindBest);
+                ScheduleFullUpdate(PrimUpdateFlags.CompressedOrCached);
         }
 
         public int registerTargetWaypoint(Vector3 target, float tolerance)

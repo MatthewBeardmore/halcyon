@@ -141,12 +141,14 @@ namespace OpenSim.Region.ClientStack.LindenUDP
             public SceneObjectPart Part;
             public uint Flags;
             public Vector3 LPos;
+            public PrimUpdateFlags UpdateFlags;
 
-            public PrimFullUpdate(SceneObjectPart part, uint flags, Vector3 lPos)
+            public PrimFullUpdate(SceneObjectPart part, uint flags, Vector3 lPos, PrimUpdateFlags updateFlags)
             {
                 this.Part = part;
                 this.Flags = flags;
                 this.LPos = lPos;
+                this.UpdateFlags = updateFlags;
             }
         }
 
@@ -3321,7 +3323,7 @@ namespace OpenSim.Region.ClientStack.LindenUDP
                     return;
                 }
 
-                PrimFullUpdate pfu = new PrimFullUpdate(part, flags, lPos);
+                PrimFullUpdate pfu = new PrimFullUpdate(part, flags, lPos, updateFlags);
 
                 if (!m_primFullUpdates.Contains(pfu))
                 {
@@ -3344,7 +3346,7 @@ namespace OpenSim.Region.ClientStack.LindenUDP
         /// <param name="lPos"></param>
         public void SendPrimitiveToClientImmediate(object obj, uint flags, Vector3 lPos)
         {
-            PrimFullUpdate pfu = new PrimFullUpdate((SceneObjectPart)obj, flags, lPos);
+            PrimFullUpdate pfu = new PrimFullUpdate((SceneObjectPart)obj, flags, lPos, PrimUpdateFlags.None);
 
             ObjectUpdatePacket outPacket =
                         (ObjectUpdatePacket)PacketPool.Instance.GetPacket(
@@ -3487,28 +3489,86 @@ namespace OpenSim.Region.ClientStack.LindenUDP
                     return false;
                 }
 
-                ObjectUpdatePacket outPacket =
-                        (ObjectUpdatePacket)PacketPool.Instance.GetPacket(
-                        PacketType.ObjectUpdate);
+                List<PrimFullUpdate> fullUpdates = new List<PrimFullUpdate>();
+                List<PrimFullUpdate> compressedUpdates = new List<PrimFullUpdate>();
+                List<PrimFullUpdate> cachedUpdates = new List<PrimFullUpdate>();
+                List<PrimFullUpdate> terseUpdates = new List<PrimFullUpdate>();
+                IObjectCache objectCacheModule = Scene.RequestModuleInterface<IObjectCache>();
 
-                outPacket.RegionData.RegionHandle =
-                        Scene.RegionInfo.RegionHandle;
-                outPacket.RegionData.TimeDilation =
-                        (ushort)(Scene.TimeDilation * ushort.MaxValue);
 
                 int max = Math.Min(m_primFullUpdates.Count, updatesToSend);
-
-                outPacket.ObjectData = new ObjectUpdatePacket.ObjectDataBlock[max];
 
                 C5.HashSet<int> killedIndexes = new C5.HashSet<int>();
                 for (int index = 0; index < max; index++)
                 {
                     PrimFullUpdate pfu =  m_primFullUpdates.RemoveFirst();
+                    PrimUpdateFlags updateFlags = pfu.UpdateFlags;
 
                     if ((!_pastKills.ContainsKey(pfu.Part.LocalId)) && (!pfu.Part.ParentGroup.InTransit))
                     {
-                        ObjectUpdatePacket.ObjectDataBlock block = this.ObjectBlockFromObject(pfu);
-                        outPacket.ObjectData[index] = block;
+                        bool canUseCompressed = true;
+                        bool canUseCached = true;
+
+                        if (updateFlags != PrimUpdateFlags.TerseUpdate && pfu.Part.SitTargetAvatar != UUID.Zero)
+                        {
+                            updateFlags = PrimUpdateFlags.ForcedFullUpdate;
+                        }
+
+                        if (canUseCached && objectCacheModule != null)
+                            canUseCached = objectCacheModule.UseCachedObject(AgentId, pfu.Part.UUID, BuildCRCForCompressedObjectUpdate(pfu.Part));
+                        else
+                            //No cache module? Don't use cached then, or it won't stop sending ObjectUpdateCached even when the client requests prims
+                            canUseCached = false;
+
+
+                        if (updateFlags.HasFlag(PrimUpdateFlags.FullUpdate))
+                        {
+                            canUseCompressed = false;
+                        }
+                        else if (updateFlags.HasFlag(PrimUpdateFlags.ForcedFullUpdate))
+                        {
+                            //If a full update has been requested, DO THE FULL UPDATE.
+                            // Don't try to get out of this.... the monster called RepeatObjectUpdateCachedFromTheServer will occur and eat all your prims!
+                            canUseCached = false;
+                            canUseCompressed = false;
+                        }
+                        else
+                        {
+                            if (updateFlags.HasFlag(PrimUpdateFlags.Position) ||
+                                updateFlags.HasFlag(PrimUpdateFlags.Rotation) ||
+                                updateFlags.HasFlag(PrimUpdateFlags.Velocity) ||
+                                updateFlags.HasFlag(PrimUpdateFlags.Acceleration) ||
+                                updateFlags.HasFlag(PrimUpdateFlags.AngularVelocity) ||
+                                updateFlags.HasFlag(PrimUpdateFlags.CollisionPlane) ||
+                                updateFlags.HasFlag(PrimUpdateFlags.Joint))
+                            {
+                                canUseCompressed = false;
+                            }
+                        }
+
+                        if (pfu.Part.IsAttachment)
+                        {
+                            canUseCached = false;
+                            canUseCompressed = false;
+                        }
+
+                        
+                        if(updateFlags == PrimUpdateFlags.TerseUpdate)
+                        {
+                            terseUpdates.Add(pfu);
+                        }
+                        else if(canUseCompressed)
+                        {
+                            compressedUpdates.Add(pfu);
+                        }
+                        else if (canUseCached)
+                        {
+                            cachedUpdates.Add(pfu);
+                        }
+                        else
+                        {
+                            fullUpdates.Add(pfu);
+                        }
                     }
                     else
                     {   // in the _pastKills dictionary, OR the part is in transit.
@@ -3516,37 +3576,189 @@ namespace OpenSim.Region.ClientStack.LindenUDP
                         killedIndexes.Add(index);
                     }
                 }
-                
 
-                //if there are indexes that were killed we need to create a new array excluding those
-                if (killedIndexes.Count > 0)
+                bool packetsSentResult = false;
+                if(fullUpdates.Count > 0)
                 {
-                    ObjectUpdatePacket.ObjectDataBlock[] oldData = outPacket.ObjectData;
+                    ObjectUpdatePacket outPacket =
+                            (ObjectUpdatePacket)PacketPool.Instance.GetPacket(
+                            PacketType.ObjectUpdate);
 
-                    outPacket.ObjectData = new ObjectUpdatePacket.ObjectDataBlock[max - killedIndexes.Count];
+                    outPacket.RegionData.RegionHandle =
+                            Scene.RegionInfo.RegionHandle;
+                    outPacket.RegionData.TimeDilation =
+                            (ushort)(Scene.TimeDilation * ushort.MaxValue);
 
-                    int insertIdx = 0;
-                    for (int index = 0; index < max; index++)
+                    outPacket.ObjectData = new ObjectUpdatePacket.ObjectDataBlock[fullUpdates.Count];
+
+                    for(int index = 0; index < fullUpdates.Count; index++)
                     {
-                        if (!killedIndexes.Contains(index))
+                        ObjectUpdatePacket.ObjectDataBlock block = this.ObjectBlockFromObject(fullUpdates[index]);
+                        if (objectCacheModule != null)
                         {
-                            outPacket.ObjectData[insertIdx++] = oldData[index];
+                            block.CRC = BuildCRCForCompressedObjectUpdate(fullUpdates[index].Part);
+                            objectCacheModule.AddCachedObject(AgentId, fullUpdates[index].Part.UUID, block.CRC);
                         }
-                        else
-                        {
-                            //m_log.DebugFormat("[LLCV]: Not sending prim {0}. Prim has been killed", oldData[index].ID);
-                        }
+                        outPacket.ObjectData[index] = block;
+                    }
+
+                    if (outPacket.ObjectData.Length > 0)
+                    {
+                        outPacket.Header.Zerocoded = true;
+                        OutPacket(outPacket, ThrottleOutPacketType.Task);
+                        packetsSentResult = true;
                     }
                 }
 
-                if (outPacket.ObjectData.Length > 0)
+                if(compressedUpdates.Count > 0)
                 {
+                    ObjectUpdateCompressedPacket outPacket =
+                       (ObjectUpdateCompressedPacket)PacketPool.Instance.GetPacket(PacketType.ObjectUpdateCompressed);
+                    outPacket.RegionData.RegionHandle = m_scene.RegionInfo.RegionHandle;
+                    outPacket.RegionData.TimeDilation =
+                            (ushort)(Scene.TimeDilation * ushort.MaxValue);
+                    outPacket.ObjectData = new ObjectUpdateCompressedPacket.ObjectDataBlock[compressedUpdates.Count];
+                    outPacket.Type = PacketType.ObjectUpdateCompressed;
+
+                    for (int index = 0; index < compressedUpdates.Count; index++)
+                    {
+                        PrimFullUpdate pfu = compressedUpdates[index];
+                        PrimUpdateFlags updateFlags = pfu.UpdateFlags;
+
+                        //We are sending a compressed, which the client will save, add it to the cache
+                        if (objectCacheModule != null)
+                            objectCacheModule.AddCachedObject(AgentId, pfu.Part.UUID, BuildCRCForCompressedObjectUpdate(pfu.Part));
+                        CompressedFlags Flags = CompressedFlags.None;
+                        if (updateFlags == PrimUpdateFlags.FullUpdate || updateFlags == PrimUpdateFlags.CompressedOrCached)
+                        {
+                            //Add the defaults
+                            updateFlags = PrimUpdateFlags.None;
+                        }
+
+                        updateFlags |= PrimUpdateFlags.ClickAction;
+                        updateFlags |= PrimUpdateFlags.ExtraData;
+                        updateFlags |= PrimUpdateFlags.Shape;
+                        updateFlags |= PrimUpdateFlags.Material;
+                        updateFlags |= PrimUpdateFlags.Textures;
+                        updateFlags |= PrimUpdateFlags.Rotation;
+                        updateFlags |= PrimUpdateFlags.PrimFlags;
+                        updateFlags |= PrimUpdateFlags.Position;
+                        updateFlags |= PrimUpdateFlags.AngularVelocity;
+
+                        //Must send these as well
+                        if (pfu.Part.Text != "")
+                            updateFlags |= PrimUpdateFlags.Text;
+                        else
+                            updateFlags &= ~PrimUpdateFlags.Text;
+                        if (pfu.Part.AngularVelocity != Vector3.Zero)
+                            updateFlags |= PrimUpdateFlags.AngularVelocity;
+                        else
+                            updateFlags &= ~PrimUpdateFlags.AngularVelocity;
+                        if (pfu.Part.TextureAnimation != null && pfu.Part.TextureAnimation.Length != 0)
+                            updateFlags |= PrimUpdateFlags.TextureAnim;
+                        else
+                            updateFlags &= ~PrimUpdateFlags.TextureAnim;
+                        if (pfu.Part.Sound != UUID.Zero)
+                            updateFlags |= PrimUpdateFlags.Sound;
+                        else
+                            updateFlags &= ~PrimUpdateFlags.Sound;
+                        if (pfu.Part.ParticleSystem != null && pfu.Part.ParticleSystem.Length != 0)
+                            updateFlags |= PrimUpdateFlags.Particles;
+                        else
+                            updateFlags &= ~PrimUpdateFlags.Particles;
+                        if (!string.IsNullOrEmpty(pfu.Part.MediaUrl))
+                            updateFlags |= PrimUpdateFlags.MediaURL;
+                        else
+                            updateFlags &= ~PrimUpdateFlags.MediaURL;
+                        if (pfu.Part.ParentGroup.RootPart.IsAttachment)
+                            updateFlags |= PrimUpdateFlags.AttachmentPoint;
+                        else
+                            updateFlags &= ~PrimUpdateFlags.AttachmentPoint;
+
+                        //Make sure that we send this! Otherwise, the client will only see one prim
+                        if (pfu.Part.ParentGroup != null)
+                            if (pfu.Part.ParentGroup.Children.Count != 1)
+                                updateFlags |= PrimUpdateFlags.ParentID;
+
+                        if (updateFlags.HasFlag(PrimUpdateFlags.Text) && pfu.Part.Text == "")
+                            updateFlags &= ~PrimUpdateFlags.Text; //Remove the text flag if we don't have text!
+
+                        if (updateFlags.HasFlag(PrimUpdateFlags.AngularVelocity))
+                            Flags |= CompressedFlags.HasAngularVelocity;
+                        if (updateFlags.HasFlag(PrimUpdateFlags.MediaURL))
+                            Flags |= CompressedFlags.MediaURL;
+                        if (updateFlags.HasFlag(PrimUpdateFlags.ParentID))
+                            Flags |= CompressedFlags.HasParent;
+                        if (updateFlags.HasFlag(PrimUpdateFlags.Particles))
+                            Flags |= CompressedFlags.HasParticles;
+                        if (updateFlags.HasFlag(PrimUpdateFlags.Sound))
+                            Flags |= CompressedFlags.HasSound;
+                        if (updateFlags.HasFlag(PrimUpdateFlags.Text))
+                            Flags |= CompressedFlags.HasText;
+                        if (updateFlags.HasFlag(PrimUpdateFlags.TextureAnim))
+                            Flags |= CompressedFlags.TextureAnimation;
+                        if (updateFlags.HasFlag(PrimUpdateFlags.NameValue) || pfu.Part.IsAttachment)
+                            Flags |= CompressedFlags.HasNameValues;
+                        
+                        var compressedUpdateBlock = CreateCompressedUpdateBlock(pfu.Part, Flags, pfu.Flags);
+
+                        outPacket.ObjectData[index] = compressedUpdateBlock;
+                    }
+
+                    outPacket.Header.Reliable = false;
+                    OutPacket(outPacket, ThrottleOutPacketType.Task);
+
+                    packetsSentResult = true;
+                }
+                if(cachedUpdates.Count > 0)
+                {
+                    ObjectUpdateCachedPacket outPacket =
+                       (ObjectUpdateCachedPacket)PacketPool.Instance.GetPacket(PacketType.ObjectUpdateCached);
+                    outPacket.RegionData.RegionHandle = m_scene.RegionInfo.RegionHandle;
+                    outPacket.RegionData.TimeDilation =
+                            (ushort)(Scene.TimeDilation * ushort.MaxValue);
+                    outPacket.ObjectData = new ObjectUpdateCachedPacket.ObjectDataBlock[cachedUpdates.Count];
+                    outPacket.Type = PacketType.ObjectUpdateCached;
+
+                    for (int index = 0; index < cachedUpdates.Count; index++)
+                    {
+                        PrimFullUpdate pfu = cachedUpdates[index];
+
+                        outPacket.ObjectData[index] = CreatePrimCachedUpdateBlock(pfu.Part,
+                                                                                 m_agentId,
+                                                                                 pfu.Flags);
+                    }
+
                     outPacket.Header.Zerocoded = true;
                     OutPacket(outPacket, ThrottleOutPacketType.Task);
-                    return true;
+
+                    packetsSentResult = true;
                 }
 
-                return false;
+                if(terseUpdates.Count > 0)
+                {
+                    ImprovedTerseObjectUpdatePacket outPacket =
+                       (ImprovedTerseObjectUpdatePacket)PacketPool.Instance.GetPacket(PacketType.ImprovedTerseObjectUpdate);
+                    outPacket.RegionData.RegionHandle = m_scene.RegionInfo.RegionHandle;
+                    outPacket.RegionData.TimeDilation =
+                            (ushort)(Scene.TimeDilation * ushort.MaxValue);
+                    outPacket.Type = PacketType.ImprovedTerseObjectUpdate;
+
+                    outPacket.ObjectData =
+                        new ImprovedTerseObjectUpdatePacket.
+                            ObjectDataBlock[terseUpdates.Count];
+
+                    for (int i = 0; i < terseUpdates.Count; i++)
+                    {
+                        outPacket.ObjectData[i] = CreateImprovedTerseBlock(terseUpdates[i].Part, false);
+                    }
+
+                    outPacket.Header.Reliable = false;
+                    outPacket.Header.Zerocoded = true;
+                    OutPacket(outPacket, ThrottleOutPacketType.Task);
+                }
+
+                return packetsSentResult;
             }
         }
 
@@ -3681,6 +3893,419 @@ namespace OpenSim.Region.ClientStack.LindenUDP
                 block.TextureEntry = Utils.EmptyBytes;
             }
             return block;
+        }
+
+        private ObjectUpdateCachedPacket.ObjectDataBlock CreatePrimCachedUpdateBlock(SceneObjectPart data,
+                                                                                     UUID recipientID,
+                                                                                     uint primFlags)
+        {
+            ObjectUpdateCachedPacket.ObjectDataBlock odb = new ObjectUpdateCachedPacket.ObjectDataBlock
+            { CRC = BuildCRCForCompressedObjectUpdate(data), ID = data.LocalId };
+
+            #region PrimFlags
+
+            /*PrimFlags flags = (PrimFlags)((Scene)m_scene).Permissions.GenerateClientFlags(recipientID, data.UUID);
+
+            // Don't send the CreateSelected flag to everyone
+            flags &= ~PrimFlags.CreateSelected;*/
+
+            /*if (recipientID == data.OwnerID)
+            {
+                if (data.CreateSelected)
+                {
+                    // Only send this flag once, then unset it
+                    flags |= PrimFlags.CreateSelected;
+                    data.CreateSelected = false;
+                }
+            }*/
+
+            #endregion PrimFlags
+
+            odb.UpdateFlags = primFlags;
+            return odb;
+        }
+
+        private ObjectUpdateCompressedPacket.ObjectDataBlock CreateCompressedUpdateBlock(SceneObjectPart part,
+                                                                                         CompressedFlags updateFlags,
+                                                                                         uint primFlags)
+        {
+            using (System.IO.MemoryStream objectData = new System.IO.MemoryStream())
+            {
+                byte[] byteData = new byte[16];
+                objectData.Write(part.UUID.GetBytes(), 0, 16);
+                Utils.UIntToBytes(part.LocalId, byteData, 0);
+                objectData.Write(byteData, 0, 4);
+                objectData.WriteByte(part.Shape.PCode); //Type of prim
+
+                if (part.Shape.PCode == (byte)PCode.Tree || part.Shape.PCode == (byte)PCode.NewTree)
+                    updateFlags |= CompressedFlags.Tree;
+
+                objectData.WriteByte((byte)part.AttachmentPoint);
+                Utils.UIntToBytes(BuildCRCForCompressedObjectUpdate(part), byteData, 0);
+                objectData.Write(byteData, 0, 4);
+                objectData.WriteByte((byte)part.Material);
+                objectData.WriteByte((byte)part.ClickAction);
+                objectData.Write(part.Shape.Scale.GetBytes(), 0, 12);
+                objectData.Write(part.LocalPos.GetBytes(), 0, 12);
+                objectData.Write(part.RotationOffset.GetBytes(), 0, 12);
+                Utils.UIntToBytes((uint)updateFlags, byteData, 0);
+                objectData.Write(byteData, 0, 4);
+                objectData.Write(part.OwnerID.GetBytes(), 0, 16);
+
+                if ((updateFlags & CompressedFlags.HasAngularVelocity) != 0)
+                    objectData.Write(part.AngularVelocity.GetBytes(), 0, 12);
+                if ((updateFlags & CompressedFlags.HasParent) != 0)
+                {
+                    if (part.IsAttachment)
+                    {
+                        ScenePresence us = ((Scene)m_scene).GetScenePresence(AgentId);
+                        Utils.UIntToBytes(us.LocalId, byteData, 0);
+                    }
+                    else
+                        Utils.UIntToBytes(part.ParentID, byteData, 0);
+                    objectData.Write(byteData, 0, 4);
+                }
+                if ((updateFlags & CompressedFlags.Tree) != 0)
+                {
+                    objectData.WriteByte(part.Shape.State); //Tree type
+                }
+                else if ((updateFlags & CompressedFlags.ScratchPad) != 0)
+                {
+                    //Remove the flag, we have no clue what to do with this
+                    updateFlags &= ~(CompressedFlags.ScratchPad);
+                }
+                if ((updateFlags & CompressedFlags.HasText) != 0)
+                {
+                    byte[] text = Utils.StringToBytes(part.Text);
+                    objectData.Write(text, 0, text.Length);
+
+                    Color4 textColor = new Color4(part.TextColor.R, part.TextColor.G, part.TextColor.B, part.TextColor.A);
+                    byte[] textcolorBytes = textColor.GetBytes(false);
+                    objectData.Write(textcolorBytes, 0, textcolorBytes.Length);
+                }
+                if ((updateFlags & CompressedFlags.MediaURL) != 0)
+                {
+                    byte[] text = Util.StringToBytes256(part.MediaUrl);
+                    objectData.Write(text, 0, text.Length);
+                }
+
+                if ((updateFlags & CompressedFlags.HasParticles) != 0)
+                {
+                    if (part.ParticleSystem.Length == 0)
+                    {
+                        Primitive.ParticleSystem Sys = new Primitive.ParticleSystem();
+                        byte[] pdata = Sys.GetBytes();
+                        objectData.Write(pdata, 0, pdata.Length);
+                    }
+                    else
+                        objectData.Write(part.ParticleSystem, 0, part.ParticleSystem.Length);
+                }
+
+                byte[] ExtraData = part.Shape.ExtraParamsToBytes();
+                objectData.Write(ExtraData, 0, ExtraData.Length);
+
+                if ((updateFlags & CompressedFlags.HasSound) != 0)
+                {
+                    objectData.Write(part.Sound.GetBytes(), 0, 16);
+                    Utils.FloatToBytes((float)part.SoundGain, byteData, 0);
+                    objectData.Write(byteData, 0, 4);
+                    objectData.WriteByte(part.SoundOptions);
+                    Utils.FloatToBytes((float)part.SoundRadius, byteData, 0);
+                    objectData.Write(byteData, 0, 4);
+                }
+                if ((updateFlags & CompressedFlags.HasNameValues) != 0)
+                {
+                    if (part.IsAttachment)
+                    {
+                        byte[] NV = Util.StringToBytes256("AttachItemID STRING RW SV " + part.FromUserInventoryItemID);
+                        objectData.Write(NV, 0, NV.Length);
+                    }
+                }
+
+                objectData.WriteByte(part.Shape.PathCurve);
+                Utils.UInt16ToBytes(part.Shape.PathBegin, byteData, 0);
+                objectData.Write(byteData, 0, 2);
+                Utils.UInt16ToBytes(part.Shape.PathEnd, byteData, 0);
+                objectData.Write(byteData, 0, 2);
+                objectData.WriteByte(part.Shape.PathScaleX);
+                objectData.WriteByte(part.Shape.PathScaleY);
+                objectData.WriteByte(part.Shape.PathShearX);
+                objectData.WriteByte(part.Shape.PathShearY);
+                objectData.WriteByte((byte)part.Shape.PathTwist);
+                objectData.WriteByte((byte)part.Shape.PathTwistBegin);
+                objectData.WriteByte((byte)part.Shape.PathRadiusOffset);
+                objectData.WriteByte((byte)part.Shape.PathTaperX);
+                objectData.WriteByte((byte)part.Shape.PathTaperY);
+                objectData.WriteByte(part.Shape.PathRevolutions);
+                objectData.WriteByte((byte)part.Shape.PathSkew);
+                objectData.WriteByte(part.Shape.ProfileCurve);
+                Utils.UInt16ToBytes(part.Shape.ProfileBegin, byteData, 0);
+                objectData.Write(byteData, 0, 2);
+                Utils.UInt16ToBytes(part.Shape.ProfileEnd, byteData, 0);
+                objectData.Write(byteData, 0, 2);
+                Utils.UInt16ToBytes(part.Shape.ProfileHollow, byteData, 0);
+                objectData.Write(byteData, 0, 2);
+
+                if (part.Shape.TextureEntry != null && part.Shape.TextureEntry.Length > 0)
+                {
+                    // Texture Length
+                    Utils.IntToBytes(part.Shape.TextureEntry.Length, byteData, 0);
+                    objectData.Write(byteData, 0, 4);
+                    // Texture
+                    objectData.Write(part.Shape.TextureEntry, 0, part.Shape.TextureEntry.Length);
+                }
+                else
+                {
+                    Utils.IntToBytes(0, byteData, 0);
+                    objectData.Write(byteData, 0, 4);
+                }
+
+                if ((updateFlags & CompressedFlags.TextureAnimation) != 0)
+                {
+                    Utils.UInt64ToBytes((ulong)part.TextureAnimation.Length, byteData, 0);
+                    objectData.Write(byteData, 0, 4);
+                    objectData.Write(part.TextureAnimation, 0, part.TextureAnimation.Length);
+                }
+
+                ObjectUpdateCompressedPacket.ObjectDataBlock update = new ObjectUpdateCompressedPacket.ObjectDataBlock();
+
+                #region PrimFlags
+
+                PrimFlags primFlagsEnum = (PrimFlags)primFlags;
+                update.UpdateFlags = primFlags;
+
+                #endregion PrimFlags
+
+                update.Data = objectData.ToArray();
+
+                return update;
+            }
+        }
+
+        private uint BuildCRCForCompressedObjectUpdate(SceneObjectPart part)
+        {
+            using (System.IO.MemoryStream objectData = new System.IO.MemoryStream())
+            {
+                PrimUpdateFlags primUpdateFlags = PrimUpdateFlags.None;
+
+                primUpdateFlags |= PrimUpdateFlags.ClickAction;
+                primUpdateFlags |= PrimUpdateFlags.ExtraData;
+                primUpdateFlags |= PrimUpdateFlags.Shape;
+                primUpdateFlags |= PrimUpdateFlags.Material;
+                primUpdateFlags |= PrimUpdateFlags.Textures;
+                primUpdateFlags |= PrimUpdateFlags.Rotation;
+                primUpdateFlags |= PrimUpdateFlags.PrimFlags;
+                primUpdateFlags |= PrimUpdateFlags.Position;
+                primUpdateFlags |= PrimUpdateFlags.AngularVelocity;
+
+                //Must send these as well
+                if (part.Text != "")
+                    primUpdateFlags |= PrimUpdateFlags.Text;
+                else
+                    primUpdateFlags &= ~PrimUpdateFlags.Text;
+                if (part.AngularVelocity != Vector3.Zero)
+                    primUpdateFlags |= PrimUpdateFlags.AngularVelocity;
+                else
+                    primUpdateFlags &= ~PrimUpdateFlags.AngularVelocity;
+                if (part.TextureAnimation != null && part.TextureAnimation.Length != 0)
+                    primUpdateFlags |= PrimUpdateFlags.TextureAnim;
+                else
+                    primUpdateFlags &= ~PrimUpdateFlags.TextureAnim;
+                if (part.Sound != UUID.Zero)
+                    primUpdateFlags |= PrimUpdateFlags.Sound;
+                else
+                    primUpdateFlags &= ~PrimUpdateFlags.Sound;
+                if (part.ParticleSystem != null && part.ParticleSystem.Length != 0)
+                    primUpdateFlags |= PrimUpdateFlags.Particles;
+                else
+                    primUpdateFlags &= ~PrimUpdateFlags.Particles;
+                if (!string.IsNullOrEmpty(part.MediaUrl))
+                    primUpdateFlags |= PrimUpdateFlags.MediaURL;
+                else
+                    primUpdateFlags &= ~PrimUpdateFlags.MediaURL;
+                if (part.ParentGroup.RootPart.IsAttachment)
+                    primUpdateFlags |= PrimUpdateFlags.AttachmentPoint;
+                else
+                    primUpdateFlags &= ~PrimUpdateFlags.AttachmentPoint;
+
+                CompressedFlags updateFlags = CompressedFlags.None;
+                if (primUpdateFlags.HasFlag(PrimUpdateFlags.AngularVelocity))
+                    updateFlags |= CompressedFlags.HasAngularVelocity;
+                if (primUpdateFlags.HasFlag(PrimUpdateFlags.MediaURL))
+                    updateFlags |= CompressedFlags.MediaURL;
+                if (primUpdateFlags.HasFlag(PrimUpdateFlags.ParentID))
+                    updateFlags |= CompressedFlags.HasParent;
+                if (primUpdateFlags.HasFlag(PrimUpdateFlags.Particles))
+                    updateFlags |= CompressedFlags.HasParticles;
+                if (primUpdateFlags.HasFlag(PrimUpdateFlags.Sound))
+                    updateFlags |= CompressedFlags.HasSound;
+                if (primUpdateFlags.HasFlag(PrimUpdateFlags.Text))
+                    updateFlags |= CompressedFlags.HasText;
+                if (primUpdateFlags.HasFlag(PrimUpdateFlags.TextureAnim))
+                    updateFlags |= CompressedFlags.TextureAnimation;
+                if (primUpdateFlags.HasFlag(PrimUpdateFlags.NameValue) || part.IsAttachment)
+                    updateFlags |= CompressedFlags.HasNameValues;
+
+                byte[] byteData = new byte[16];
+                objectData.Write(part.UUID.GetBytes(), 0, 16);
+                Utils.UIntToBytes(part.LocalId, byteData, 0);
+                objectData.Write(byteData, 0, 4);
+                objectData.WriteByte(part.Shape.PCode); //Type of prim
+
+                if (part.Shape.PCode == (byte)PCode.Tree || part.Shape.PCode == (byte)PCode.NewTree)
+                    updateFlags |= CompressedFlags.Tree;
+
+                objectData.WriteByte((byte)part.AttachmentPoint);
+                objectData.WriteByte((byte)part.Material);
+                objectData.WriteByte((byte)part.ClickAction);
+                objectData.Write(part.Shape.Scale.GetBytes(), 0, 12);
+                objectData.Write(part.RelativePosition.GetBytes(), 0, 12);
+                objectData.Write(part.RotationOffset.GetBytes(), 0, 12);
+                objectData.Write(byteData, 0, 4);
+                objectData.Write(part.OwnerID.GetBytes(), 0, 16);
+
+                if ((updateFlags & CompressedFlags.HasAngularVelocity) != 0)
+                    objectData.Write(part.AngularVelocity.GetBytes(), 0, 12);
+                if ((updateFlags & CompressedFlags.HasParent) != 0)
+                {
+                    if (part.IsAttachment)
+                    {
+                        ScenePresence us = ((Scene)m_scene).GetScenePresence(AgentId);
+                        Utils.UIntToBytes(us.LocalId, byteData, 0);
+                    }
+                    else
+                        Utils.UIntToBytes(part.ParentID, byteData, 0);
+                    objectData.Write(byteData, 0, 4);
+                }
+                if ((updateFlags & CompressedFlags.Tree) != 0)
+                {
+                    objectData.WriteByte(part.Shape.State); //Tree type
+                }
+                else if ((updateFlags & CompressedFlags.ScratchPad) != 0)
+                {
+                    //Remove the flag, we have no clue what to do with this
+                    updateFlags &= ~(CompressedFlags.ScratchPad);
+                }
+                if ((updateFlags & CompressedFlags.HasText) != 0)
+                {
+                    byte[] text = Utils.StringToBytes(part.Text);
+                    objectData.Write(text, 0, text.Length);
+
+                    Color4 textColor = new Color4(part.TextColor.R, part.TextColor.G, part.TextColor.B, part.TextColor.A);
+                    byte[] textcolorBytes = textColor.GetBytes(false);
+                    objectData.Write(textcolorBytes, 0, textcolorBytes.Length);
+                }
+                if ((updateFlags & CompressedFlags.MediaURL) != 0)
+                {
+                    byte[] text = Util.StringToBytes256(part.MediaUrl);
+                    objectData.Write(text, 0, text.Length);
+                }
+
+                if ((updateFlags & CompressedFlags.HasParticles) != 0)
+                {
+                    if (part.ParticleSystem.Length == 0)
+                    {
+                        Primitive.ParticleSystem Sys = new Primitive.ParticleSystem();
+                        byte[] pdata = Sys.GetBytes();
+                        objectData.Write(pdata, 0, pdata.Length);
+                        //updateFlags = updateFlags & ~CompressedFlags.HasParticles;
+                    }
+                    else
+                        objectData.Write(part.ParticleSystem, 0, part.ParticleSystem.Length);
+                }
+
+                byte[] ExtraData = part.Shape.ExtraParamsToBytes();
+                objectData.Write(ExtraData, 0, ExtraData.Length);
+
+                if ((updateFlags & CompressedFlags.HasSound) != 0)
+                {
+                    objectData.Write(part.Sound.GetBytes(), 0, 16);
+                    Utils.FloatToBytes((float)part.SoundGain, byteData, 0);
+                    objectData.Write(byteData, 0, 4);
+                    objectData.WriteByte(part.SoundOptions);
+                    Utils.FloatToBytes((float)part.SoundRadius, byteData, 0);
+                    objectData.Write(byteData, 0, 4);
+                }
+                if ((updateFlags & CompressedFlags.HasNameValues) != 0)
+                {
+                    if (part.IsAttachment)
+                    {
+                        byte[] NV = Util.StringToBytes256("AttachItemID STRING RW SV " + part.FromUserInventoryItemID);
+                        objectData.Write(NV, 0, NV.Length);
+                    }
+                }
+
+                objectData.WriteByte(part.Shape.PathCurve);
+                Utils.UInt16ToBytes(part.Shape.PathBegin, byteData, 0);
+                objectData.Write(byteData, 0, 2);
+                Utils.UInt16ToBytes(part.Shape.PathEnd, byteData, 0);
+                objectData.Write(byteData, 0, 2);
+                objectData.WriteByte(part.Shape.PathScaleX);
+                objectData.WriteByte(part.Shape.PathScaleY);
+                objectData.WriteByte(part.Shape.PathShearX);
+                objectData.WriteByte(part.Shape.PathShearY);
+                objectData.WriteByte((byte)part.Shape.PathTwist);
+                objectData.WriteByte((byte)part.Shape.PathTwistBegin);
+                objectData.WriteByte((byte)part.Shape.PathRadiusOffset);
+                objectData.WriteByte((byte)part.Shape.PathTaperX);
+                objectData.WriteByte((byte)part.Shape.PathTaperY);
+                objectData.WriteByte(part.Shape.PathRevolutions);
+                objectData.WriteByte((byte)part.Shape.PathSkew);
+                objectData.WriteByte(part.Shape.ProfileCurve);
+                Utils.UInt16ToBytes(part.Shape.ProfileBegin, byteData, 0);
+                objectData.Write(byteData, 0, 2);
+                Utils.UInt16ToBytes(part.Shape.ProfileEnd, byteData, 0);
+                objectData.Write(byteData, 0, 2);
+                Utils.UInt16ToBytes(part.Shape.ProfileHollow, byteData, 0);
+                objectData.Write(byteData, 0, 2);
+
+                if (part.Shape.TextureEntry != null && part.Shape.TextureEntry.Length > 0)
+                {
+                    // Texture Length
+                    Utils.IntToBytes(part.Shape.TextureEntry.Length, byteData, 0);
+                    objectData.Write(byteData, 0, 4);
+                    // Texture
+                    objectData.Write(part.Shape.TextureEntry, 0, part.Shape.TextureEntry.Length);
+                }
+                else
+                {
+                    Utils.IntToBytes(0, byteData, 0);
+                    objectData.Write(byteData, 0, 4);
+                }
+
+                if ((updateFlags & CompressedFlags.TextureAnimation) != 0)
+                {
+                    Utils.UInt64ToBytes((ulong)part.TextureAnimation.Length, byteData, 0);
+                    objectData.Write(byteData, 0, 4);
+                    objectData.Write(part.TextureAnimation, 0, part.TextureAnimation.Length);
+                }
+
+                return ModRTU_CRC(objectData.ToArray());
+            }
+        }
+
+        // Compute the MODBUS RTU CRC
+        private uint ModRTU_CRC(byte[] buf)
+        {
+            uint crc = 0xFFFF;
+
+            for (int pos = 0; pos < buf.Length; pos++)
+            {
+                crc ^= (uint)buf[pos] & 0xFF;   // XOR byte into least sig. byte of crc
+
+                for (int i = 8; i != 0; i--)
+                {    // Loop over each bit
+                    if ((crc & 0x0001) != 0)
+                    {      // If the LSB is set
+                        crc >>= 1;                    // Shift right and XOR 0xA001
+                        crc ^= 0xA001;
+                    }
+                    else                            // Else LSB is not set
+                        crc >>= 1;                    // Just shift right
+                }
+            }
+            // Note, this number has low and high bytes swapped, so use it accordingly (or swap bytes)
+            return crc;
         }
 
         bool BulkProcessPrimTerseUpdates(int maxUpdates)

@@ -38,7 +38,7 @@ namespace OpenSim.Framework
         ExtraData = 1 << 20,
         Sound = 1 << 21,
         Joint = 1 << 22,
-        FindBest = 1 << 23,
+        CompressedOrCached = 1 << 23,
         ForcedFullUpdate = UInt32.MaxValue - 1,
         FullUpdate = UInt32.MaxValue,
 
@@ -56,8 +56,8 @@ namespace OpenSim.Framework
 
     public interface IObjectCache
     {
-        bool UseCachedObject(UUID AgentID, uint localID, uint CurrentEntityCRC);
-        void AddCachedObject(UUID AgentID, uint localID, uint CurrentEntityCRC);
-        void RemoveObject(UUID AgentID, uint localID, byte cacheMissType);
+        bool UseCachedObject(UUID AgentID, UUID localID, uint CurrentEntityCRC);
+        void AddCachedObject(UUID AgentID, UUID localID, uint CurrentEntityCRC);
+        void RemoveObject(UUID AgentID, UUID localID, byte cacheMissType);
     }
 }
